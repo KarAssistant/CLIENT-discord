@@ -1,5 +1,5 @@
 const fs = require("fs");
-const encryptData = require("./RSA").encryptData;
+const encryptionForRequest = require("./encryption").encryptionForRequest;
 const updateUser = require("./updateUser").updateUser;
 const { stringify } = require("qs");
 const axios = require("axios");
@@ -36,7 +36,6 @@ async function createNewClient({ authautifierTag }) {
         else if (error.response && error.response.status === 500)
           return resolve({ err: "Kara as an internal error", status: error.response.status });
         else {
-          console.log(error);
           return resolve({ err: error.code, status: error.response ? error.response.status : 420 });
         }
       });
@@ -44,9 +43,9 @@ async function createNewClient({ authautifierTag }) {
 }
 
 module.exports.decryptResult = decryptResult;
-async function decryptResult({ data, publicKey }) {
+async function decryptResult({ data, clientPrivateKey }) {
   try {
-    const keyPublic = new NodeRSA(publicKey);
+    const keyPublic = new NodeRSA(clientPrivateKey);
     const resultDecrypted = keyPublic.decryptPublic(data, "utf8");
     return JSON.parse(resultDecrypted);
   } catch {
@@ -58,10 +57,14 @@ async function decryptResult({ data, publicKey }) {
 
 module.exports.prepareRequest = async ({ userId, userName, avatarUrl, messageContent }) => {
   const userExist = fs.existsSync(__dirname + "/../data/clients/" + userId + ".json");
-  const { err, clientToken, publicKey } = await new Promise(async (resolve, reject) => {
+  const { err, clientToken, backPublicKey, clientPrivateKey } = await new Promise(async (resolve, reject) => {
     if (userExist) {
       const userData = JSON.parse(fs.readFileSync(__dirname + "/../data/clients/" + userId + ".json", "utf8"));
-      resolve({ clientToken: userData.clientToken, publicKey: userData.publicKey });
+      resolve({
+        clientToken: userData.clientToken,
+        backPublicKey: userData.backPublicKey,
+        clientPrivateKey: userData.clientPrivateKey,
+      });
     } else {
       const newClient = await createNewClient({ authautifierTag: userId });
       if (newClient.err) return resolve({ err: newClient.err });
@@ -69,23 +72,24 @@ module.exports.prepareRequest = async ({ userId, userName, avatarUrl, messageCon
         userName,
         avatarUrl,
         clientToken: newClient.clientToken,
-        publicKey: newClient.publicKey,
+        backPublicKey: newClient.backPublicKey,
+        clientPrivateKey: newClient.clientPrivateKey,
       };
       fs.writeFileSync(__dirname + "/../data/clients/" + userId + ".json", JSON.stringify(userData));
-      const res = await updateUser({
-        userName,
-        userId,
-        data: { discordAvatarUrl: avatarUrl },
-      });
+      // const res = await updateUser({
+      //   userName,
+      //   userId,
+      //   data: { discordAvatarUrl: avatarUrl },
+      // });
       resolve(newClient);
     }
   });
   if (err) return { err };
 
-  const data = await encryptData({
-    data: { query: messageContent },
-    publicKey,
+  const data = await encryptionForRequest({
+    query: messageContent,
+    publicKey: backPublicKey,
   });
 
-  return { clientToken, data, publicKey };
+  return { clientToken, data, clientPrivateKey };
 };

@@ -7,7 +7,7 @@ const api = axios.create({
   },
 });
 const prepareRequest = require("./prepareRequest").prepareRequest;
-const decryptResult = require("./prepareRequest").decryptResult;
+const decryptResult = require("./encryption").decryptionForResult;
 
 module.exports.makeRequest = makeRequest;
 async function makeRequest({ query, clientToken, data }) {
@@ -16,7 +16,8 @@ async function makeRequest({ query, clientToken, data }) {
       method: "GET",
       headers: { "Content-Type": "application/json", karaeatcookies: clientToken },
       params: {
-        data,
+        data: data.data,
+        aes: data.aes,
       },
       url: process.env.BACK_URL + "/api/heyKara",
     })
@@ -43,7 +44,13 @@ async function makeRequest({ query, clientToken, data }) {
 
 module.exports.heyKara = heyKara;
 async function heyKara({ userName, userId, messageContent, avatarUrl, retry = 0 }) {
-  const { err, clientToken, data, publicKey } = await prepareRequest({ userId, userName, avatarUrl, messageContent });
+  const { err, clientToken, data, clientPrivateKey } = await prepareRequest({
+    userId,
+    userName,
+    avatarUrl,
+    messageContent,
+  });
+
   if (err) return err;
   const dataRequest = data ? await makeRequest({ query: messageContent, clientToken, data }) : { clientExist: false };
   if (dataRequest.err && retry != 0) return dataRequest.err;
@@ -55,7 +62,7 @@ async function heyKara({ userName, userId, messageContent, avatarUrl, retry = 0 
   }
 
   const resultDecrypted = data
-    ? await decryptResult({ data: dataRequest, publicKey })
+    ? await decryptResult({ data: dataRequest.data, aes: dataRequest.aes, clientPrivateKey })
     : { result: "Error with the request" };
 
   const phraseResult = resultDecrypted.result;
