@@ -1,0 +1,130 @@
+name: "Docker push"
+run-name: "DockerPush : ${{ github.actor }} push '${{ github.event.head_commit.message }}' 🚀"
+on:
+  push:
+jobs:
+  Check:
+    runs-on: ubuntu-latest
+    outputs:
+      RUN_BUILD: ${{ steps.define_docker_data.outputs.run_build }}
+      VERSION: ${{ steps.define_docker_data.outputs.version }}
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check if version already exist
+        id: define_docker_data
+        run: |
+          json_content=$(cat package.json)
+          version=$(echo "$json_content" | jq -r '.version')
+          echo "Target version : $version"
+          if [[ $(docker manifest inspect ${{ vars.DOCKERHUB_USERNAME }}/karassistant-client-discord:$version 2> /dev/null) != "" ]]; then
+            echo -e "\e[31mVersion $version already exist"
+            echo "Version $version already exist" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Build image version $version" >> $GITHUB_STEP_SUMMARY
+            echo -e "\e[32mBuild image version $version"
+            echo "run_build=yes" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+
+  Tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+      - name: Install dependencies
+        run: |
+          npm install
+      - name: Run tests and create summary
+        id: tests
+        continue-on-error: true
+        run: |
+          export NODE_OPTIONS=--no-experimental-fetch && npm test 2>> /tmp/results.txt >> /tmp/coverage0.txt
+      - name: Prepare data
+        id: data
+        run: |
+          awk 'NR>5' /tmp/coverage0.txt > /tmp/coverage1.txt
+          echo "embeds=[{\"type\":\"rich\",\"title\":\"$(grep -q "failed" /tmp/results.txt && echo "❌ Errors with the test [CLIENT_DISCORD]" || echo "✅ All test are checked [CLIENT_DISCORD]")\",\"description\":\"**Test client discord result:**\n$(tail -n 5 /tmp/results.txt  | tr '\n' "&" | sed 's/&/\\n/g')\n**Coverage :**\",\"color\":$(grep -q "failed" /tmp/results.txt && echo 16525609 || echo 38912),\"fields\":[{\"name\":\"**Statements**\",\"value\":\"$(grep 'All files' /tmp/coverage0.txt | cut -d '|' -f 2 | tr -d ' ')%\",\"inline\":true},{\"name\":\"**Branches**\",\"value\":\"$(grep 'All files' /tmp/coverage0.txt | cut -d '|' -f 3 | tr -d ' ')%\",\"inline\":true},{\"name\":\"**Functions**\",\"value\":\"$(grep 'All files' /tmp/coverage0.txt | cut -d '|' -f 4 | tr -d ' ')%\",\"inline\":true},{\"name\":\"**Lines**\",\"value\":\"$(grep 'All files' /tmp/coverage0.txt | cut -d '|' -f 5 | tr -d ' ')%\",\"inline\":true}]}]" >> "$GITHUB_OUTPUT"
+
+      - name: ERROR Send coverage to discord
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_USERNAME: GitHub
+          DISCORD_AVATAR: https://cdn.discordapp.com/avatars/1138225091528904714/df91181b3f1cf0ef1592fbe18e0962d7.webp?size=100
+          DISCORD_EMBEDS: ${{ steps.data.outputs.embeds }}
+
+      - name: Echo errors
+        if: steps.tests.outcome == 'failure'
+        run: |
+          sed '$ d' /tmp/coverage1.txt > $GITHUB_STEP_SUMMARY
+          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+          cat /tmp/results.txt >> $GITHUB_STEP_SUMMARY
+          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+          echo "❌ Errors with the test" >> $GITHUB_STEP_SUMMARY
+          exit 1
+      - name: Echo success
+        if: steps.tests.outcome == 'success'
+        run: |
+          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+          sed '$ d' /tmp/coverage1.txt > $GITHUB_STEP_SUMMARY
+          cat /tmp/results.txt >> $GITHUB_STEP_SUMMARY
+          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All test are checked" >> $GITHUB_STEP_SUMMARY
+
+  Build_Push:
+    runs-on: ubuntu-latest
+    permissions: write-all
+    needs:
+      - Check
+      - Tests
+    if: ${{ needs.Check.outputs.RUN_BUILD == 'yes' && needs.Tests.result == 'success' }}
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Echo version
+        env:
+          version: ${{ needs.Check.outputs.version }}
+        run: echo "Build image ${{ vars.DOCKERHUB_USERNAME }}/karassistant-client-discord:$version"
+
+      - name: Build and push (tagged version)
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: "${{ vars.DOCKERHUB_USERNAME }}/karassistant-client-discord:${{ needs.Check.outputs.version }}"
+
+      - name: Build and push (latest version)
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: "${{ vars.DOCKERHUB_USERNAME }}/karassistant-client-discord:latest"
+
+      - name: Create tag
+        uses: rickstaa/action-create-tag@v1
+        with:
+          tag: "client_discord-${{ needs.Check.outputs.version }}"
+
+      - name: Create summury
+        run: |
+          echo "image build 'karassistant-client-discord:${{ needs.Check.outputs.version }}' succeed" >> $GITHUB_STEP_SUMMARY
